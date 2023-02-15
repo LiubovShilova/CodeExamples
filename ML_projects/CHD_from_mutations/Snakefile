@@ -1,0 +1,241 @@
+# ending with _gatk.g.vcf are made via HaplotypeCaller
+#to specify conda env uncomment and change the conda paragraph
+
+import glob, sys, io
+import pandas as pd
+
+def clean_vcf(path_in, path_out):
+    '''
+    Deleats all the raws that did not pass one of the filters
+    input: path to input vcf
+    output: path to output cleaned vcf
+    '''  
+    with open(path_in, 'r') as f:
+        comments = []
+        raws = []
+        for l in f:
+            if l.startswith('##'):
+                comments.append(l)
+            else:
+                raws.append(l)
+
+    df = pd.read_csv(io.StringIO(''.join(raws)),
+                     dtype={'#CHROM': str, 'POS': int, 'ID': str, 'REF': str, 'ALT': str,
+                            'QUAL': float, 'FILTER': str, 'INFO': str}, sep='\t')
+    df_cleaned = df[df['FILTER']=='PASS']
+    with open(path_out, 'w') as output:
+        print(*comments, sep = '', file = output, end = '')
+    with open(path_out, 'a') as output:    
+        df_cleaned.to_csv(output, sep='\t',index=False, header=True)
+    return df_cleaned    
+
+def change_vcf_sample_names(old_vcf_path, new_vcf_path, new_names):
+    old_names = []
+    with open(new_names, 'r') as sample_names:
+        samples = [l.strip() for l in sample_names]
+        if (len(samples)== 0):
+            print('FILE WITH NEW NAMES IS EMPTY!')
+    with open(old_vcf_path, 'r') as f:
+        with open(new_vcf_path, 'w') as new_vcf: 
+            for l in f: 
+                if l.startswith('#CHROM'):
+                    headers = l.split('\t')
+                    if (headers[-(len(samples)+1)]!="FORMAT"):
+                        print('MAKE SURE THAT NUMBER OF NAMES IS EQUAL TO NUMBER OF SAMPLES IN THE VCF!')
+                    old_names = headers[-len(samples):] 
+                    del headers[-len(samples):]
+                    print(*headers, sep = "\t", file = new_vcf, end = "\t")
+                    print(*samples, sep = " ", file = new_vcf)
+                else:
+                    print(l, file = new_vcf)
+    return(old_names) 
+
+bam_input = glob.glob("*.bam")
+#variant = ""
+#for filename in bam_input:
+	#variant += "--variant " + str(filename.split('.')[0]) + '_gatk1.g.vcf' + " "
+	#print(1)
+#print('variants in command: ', variant)
+#print("")
+#filenames = glob_wildcards("{filename}.bam")
+needed_files = "gatk1_combined1.g.vcf"
+
+#
+#needed_files = ["gatk1_combined_snps_filtered3.vcf", "gatk1_combined_indels_filtered2.vcf" ]
+#needed_files = ['SC_CHDB5403634_gatk_snps_filtered1.vcf', 'SC_CHDB5403634_gatk_indels_filtered1.vcf']
+#for filename in bam_input:
+#       new_filename1 = filename.split('.')[0] + '_gatk1_snps_filtered3.vcf'
+#       new_filename2 = filename.split('.')[0] + '_gatk1_indels_filtered2.vcf'
+#       needed_files.append(new_filename1)
+#       needed_files.append(new_filename2)
+
+reference_genome = '//wibicomfs/LTBS/sequence_data_Luba/hs37d5.fa'
+#reference_genome = '//mnt/c/ngs/lpl/ref/2.fa'
+#reference_genome = '//mnt/c/ngs/lpl/hs37d5.fa'
+rule all:
+    input:
+		needed_files
+
+rule Haplotype_caller1:
+    input:
+        "{filename}.bam"
+    output:
+        "{filename}_gatk1.g.vcf"
+    shell:
+        "gatk HaplotypeCaller -I {input} -R {reference_genome} -stand-call-conf 2 -ERC GVCF -A BaseQualityRankSumTest -A ClippingRankSumTest -A Coverage -A FisherStrand -A RMSMappingQuality -A ReadPosRankSumTest -A StrandOddsRatio -A TandemRepeat -O {output}"
+
+rule Haplotype_caller:
+    input:
+        "{filename}.bam"
+    output:
+        "{filename}_gatk.g.vcf"
+    shell:
+        "gatk HaplotypeCaller -I {input} -R {reference_genome} -ERC GVCF -O {output}"
+					
+rule Combine_gvcf1:
+    input:
+        [(filename.split('.')[0] + '_gatk1.g.vcf') for filename in bam_input]
+    output:
+		"draft_gatk1_combined.g.vcf"
+    run:
+        with open('files_to_combine.list', 'w') as f:
+            with open('id_to_combine.list', 'w') as ids:
+                for filename in bam_input:
+                    f.write(str(filename.split('.')[0]) + '_gatk1.g.vcf' + "\n")
+                    ids.write(str(filename.split('.')[0]) + "\n")
+		shell("gatk CombineGVCFs -R {reference_genome} -V files_to_combine.list -O {output}")
+
+rule Rename_combined_gvcf:
+    input:
+        "draft_gatk1_combined.g.vcf"
+    output:
+        "gatk1_combined1.g.vcf"
+    run:
+        shell("bcftools reheader -s id_to_combine.list -o {output} draft_gatk1_combined.g.vcf")
+        #change_vcf_sample_names("draft_gatk1_combined.g.vcf", "gatk1_combined1.g.vcf", "id_to_combine.list")
+
+rule GenotypeGVCFs:
+    input:
+        "gatk1_combined1.g.vcf"
+    output:
+        "gatk1_combined1.vcf"
+    shell:
+        "gatk GenotypeGVCFs -R {reference_genome} -V {input} -O {output}"
+        
+
+rule Select_variants_SNP1:
+    input:
+        "gatk1_combined1.vcf"
+    output:
+        "gatk1_combined1_snps.vcf"
+    shell:
+        "gatk SelectVariants -V {input} -select-type SNP -O {output}"
+        
+
+rule Select_variants_INDEL1:
+    input:
+        "gatk1_combined1.vcf"
+    output:
+        "gatk1_combined1_indels.vcf"
+    shell:
+        "gatk SelectVariants -V {input} -select-type INDEL -O {output}"
+
+rule Variant_Filtration_SNP2:
+    input:
+        "gatk1_combined1_snps.vcf"
+    output:
+        "gatk1_combined1_snps_filtered2.vcf"
+    shell:
+        '''gatk VariantFiltration -V {input} -filter "QD < 3.0" --filter-name "QD3" -filter "QUAL < 40.0" --filter-name "QUAL40" -filter "SOR > 3.0" --filter-name "SOR3" -filter "FS > 60.0" --filter-name "FS60" -filter "MQ < 40.0" --filter-name "MQ40" -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" -O {output}'''
+
+
+rule Variant_Filtration_SNP3:
+    input:
+        "gatk1_combined1_snps.vcf"
+    output:
+        "gatk1_combined1_snps_filtered3.vcf"
+    shell:
+        '''gatk VariantFiltration -V {input} -filter "QD < 3.0" --filter-name "QD3" -filter "QUAL < 45.0" --filter-name "QUAL45" -filter "SOR > 3.0" --filter-name "SOR3" -filter "FS > 40.0" --filter-name "FS40" -filter "MQ < 45.0" --filter-name "MQ45" -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" -O {output}'''
+
+rule Variant_Filtration_SNP4:
+    input:
+        "gatk1_combined1_snps.vcf"
+    output:
+        "gatk1_combined1_snps_filtered4.vcf"
+    shell:
+        '''gatk VariantFiltration -V {input} -filter "QD < 5.0" --filter-name "QD3" -filter "QUAL < 45.0" --filter-name "QUAL45" -filter "SOR > 3.0" --filter-name "SOR3" -filter "FS > 40.0" --filter-name "FS40" -filter "MQ < 45.0" --filter-name "MQ45" -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" -O {output}'''
+
+
+
+
+
+rule Variant_Filtration_INDEL2:
+    input:
+        "gatk1_combined1_indels.vcf"
+    output:
+        "gatk1_combined1_indels_filtered2.vcf"
+    shell:
+        '''gatk VariantFiltration -V {input} -filter "QD < 3.0" --filter-name "QD3" -filter "QUAL < 40.0" --filter-name "QUAL40" -filter "FS > 200.0" --filter-name "FS200" -filter "ReadPosRankSum < -20.0" --filter-name "ReadPosRankSum-20" -O {output}'''
+
+rule Variant_Filtration_INDEL3:
+    input:
+        "gatk1_combined1_indels.vcf"
+    output:
+        "gatk1_combined1_indels_filtered3.vcf"
+    shell:
+        '''gatk VariantFiltration -V {input} -filter "QD < 5.0" --filter-name "QD3" -filter "QUAL < 40.0" --filter-name "QUAL40" -filter "FS > 200.0" --filter-name "FS200" -filter "ReadPosRankSum < -20.0" --filter-name "ReadPosRankSum-20" -O {output}'''
+
+rule Clean_vcf_snp_filtered3:
+	input: 
+		"gatk1_combined1_snps_filtered3.vcf"
+	output:
+		"gatk1_combined1_snps_filtered3_cleaned.vcf"
+	run:
+		clean_vcf("gatk1_combined1_snps_filtered3.vcf", "gatk1_combined1_snps_filtered3_cleaned.vcf")
+
+rule Clean_vcf_indel_filtered2:
+    input:
+        "gatk1_combined1_indels_filtered2.vcf"
+    output:
+        "gatk1_combined1_indels_filtered2_cleaned.vcf"
+    run:
+        clean_vcf("gatk1_combined1_indels_filtered2.vcf", "gatk1_combined1_indels_filtered2_cleaned.vcf")
+
+rule Clean_vcf_snp_filtered4:
+    input:
+        "gatk1_combined1_snps_filtered4.vcf"
+    output:
+        "gatk1_combined1_snps_filtered4_cleaned.vcf"
+    run:
+        clean_vcf("gatk1_combined1_snps_filtered4.vcf", "gatk1_combined1_snps_filtered4_cleaned.vcf")
+
+rule Clean_vcf_indel_filtered3:
+    input:
+        "gatk1_combined1_indels_filtered3.vcf"
+    output:
+        "gatk1_combined1_indels_filtered3_cleaned.vcf"
+    run:
+        clean_vcf("gatk1_combined1_indels_filtered3.vcf", "gatk1_combined1_indels_filtered3_cleaned.vcf")
+
+
+
+rule Merge_snps_and_indels:
+    input:
+        ["gatk1_combined1_indels_filtered3_cleaned.vcf", "gatk1_combined1_snps_filtered4_cleaned.vcf"]
+    output:
+        "gatk1_indels_snps_cleaned.vcf"
+    shell:
+        '''gatk MergeVcfs I=gatk1_combined1_indels_filtered3_cleaned.vcf I=gatk1_combined1_snps_filtered4_cleaned.vcf O={output}''' 
+
+rule Recode_to_bcf:
+    input:
+        "gatk1_indels_snps_cleaned.vcf"
+    output:
+        "gatk1_indels_snps_cleaned.bcf"
+    shell:
+        '''bcftools view {input} -o {output}'''
+
+
+
+
+
