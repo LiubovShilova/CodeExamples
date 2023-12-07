@@ -1,2 +1,2 @@
 # CodeExamples
-Python code examples
+some code examples
